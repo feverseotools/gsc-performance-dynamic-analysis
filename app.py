@@ -3,9 +3,33 @@ import pandas as pd
 import openai
 import os
 
-###############################
-# 1. Simple Key Validation
-###############################
+##########################################
+# 1. Cost & Token Tracking Configuration #
+##########################################
+# These rates apply to gpt-3.5-turbo as an example:
+GPT_35_TURBO_PROMPT_RATE = 0.0015  # USD per 1K prompt tokens
+GPT_35_TURBO_COMPLETION_RATE = 0.0020  # USD per 1K completion tokens
+
+def calculate_cost_from_usage(usage, model="gpt-3.5-turbo"):
+    """
+    Calculates the cost of an OpenAI API call based on token usage.
+    usage is typically: {'prompt_tokens': int, 'completion_tokens': int, 'total_tokens': int}
+    """
+    prompt_tokens = usage["prompt_tokens"]
+    completion_tokens = usage["completion_tokens"]
+    
+    if model == "gpt-3.5-turbo":
+        cost_input = (prompt_tokens / 1000.0) * GPT_35_TURBO_PROMPT_RATE
+        cost_output = (completion_tokens / 1000.0) * GPT_35_TURBO_COMPLETION_RATE
+        cost_total = cost_input + cost_output
+        return cost_total
+    else:
+        # Fallback or handle other models
+        return 0.0
+
+#####################################
+# 2. Simple Key Validation Function #
+#####################################
 def test_openai_key(api_key):
     """
     Attempts a minimal call (listing models) using the provided key.
@@ -18,13 +42,12 @@ def test_openai_key(api_key):
     except Exception:
         return False
 
-
-###############################
-# 2. GPT Code Generation
-###############################
+############################################
+# 3. GPT Code Generation with Usage Return #
+############################################
 def generate_python_code_from_gpt(prompt):
     """
-    Sends a simple prompt to GPT (ChatCompletion) and returns generated Python code.
+    Sends a prompt to GPT (ChatCompletion) and returns (code, usage).
     """
     messages = [
         {"role": "system", "content": "You are a Python code generator."},
@@ -37,27 +60,29 @@ def generate_python_code_from_gpt(prompt):
             temperature=0,
             max_tokens=400,
         )
-        return response["choices"][0]["message"]["content"]
+        code = response["choices"][0]["message"]["content"]
+        usage = response["usage"]  # includes prompt_tokens, completion_tokens, total_tokens
+        return code, usage
     except Exception as e:
-        return f"# Error generating code: {e}"
+        error_text = f"# Error generating code: {e}"
+        return error_text, None
 
-
-###############################
-# 3. Streamlit App
-###############################
+#################################
+# 4. Streamlit Main Application #
+#################################
 def main():
-    # Optional: You can set wide layout for more horizontal space.
-    st.set_page_config(page_title="GSC Explorer", layout="wide")
+    # Optionally configure page layout
+    st.set_page_config(page_title="GSC + Cost Tracker", layout="wide")
 
-    st.title("GSC Explorer with Sidebar & Expanders")
+    st.title("Google Search Console Explorer (with OpenAI Cost Tracker)")
     st.write("""
-    This example application shows how to place all steps and configurations
-    in a **left sidebar**, with each section in a **collapsible expander**.
-    The resulting actions (like data previews, generated code, and execution
-    outputs) appear in the main page area.
+    This demo shows how to:
+    1. Put all steps into a **left sidebar** (using `st.sidebar.expander`).
+    2. Track **token usage** and **cost** for each GPT request.
+    3. Accumulate a **running total** of tokens and cost in `st.session_state`.
     """)
 
-    # Session state for storing the DataFrame and API key
+    # Initialize session states
     if "api_key" not in st.session_state:
         st.session_state["api_key"] = ""
     if "df" not in st.session_state:
@@ -66,6 +91,10 @@ def main():
         st.session_state["code_generated"] = ""
     if "result" not in st.session_state:
         st.session_state["result"] = None
+    if "total_tokens" not in st.session_state:
+        st.session_state["total_tokens"] = 0
+    if "total_cost" not in st.session_state:
+        st.session_state["total_cost"] = 0.0
 
     ########################
     # SIDEBAR & EXPANDERS
@@ -89,7 +118,6 @@ def main():
         st.warning("Enter a valid OpenAI API key to continue.")
         return
     else:
-        # Set the key globally
         openai.api_key = st.session_state["api_key"]
 
     with st.sidebar.expander("Step 2: Upload Your GSC File", expanded=True):
@@ -103,38 +131,47 @@ def main():
             st.success("File uploaded successfully!")
 
     with st.sidebar.expander("Step 3: Ask GPT for Code", expanded=True):
-        st.write("Type a request or question about the data. GPT will generate Python code.")
+        st.write("Type a request about the data. GPT will generate Python code.")
         user_prompt = st.text_area(
             "Your instruction to GPT about 'df':",
-            help="For example: 'Show the top 5 rows' or 'Calculate basic stats.'"
+            help="Example: 'Show the top 5 rows' or 'Calculate basic stats.'"
         )
 
         if st.button("Generate & Run Code"):
-            if not st.session_state["df"] is None:
+            if st.session_state["df"] is not None:
                 if user_prompt.strip():
-                    # Generate code from GPT
-                    code = generate_python_code_from_gpt(
+                    code, usage = generate_python_code_from_gpt(
                         f"You have a Pandas DataFrame named 'df'. {user_prompt}"
                     )
                     st.session_state["code_generated"] = code
+
+                    # Track usage & cost
+                    if usage is not None:
+                        # Calculate cost from usage
+                        call_cost = calculate_cost_from_usage(usage, model="gpt-3.5-turbo")
+                        st.session_state["total_tokens"] += usage["total_tokens"]
+                        st.session_state["total_cost"] += call_cost
                 else:
                     st.warning("Please enter a valid prompt.")
             else:
                 st.warning("You need to upload a file first.")
-
 
     ##################################
     # MAIN PAGE: Display Results
     ##################################
     st.write("## Main Page Output")
 
-    # 1) Show Data Preview (if df is uploaded)
+    # 1) Show Accumulated Cost
+    st.write(f"**Total Tokens Used:** {st.session_state['total_tokens']}")
+    st.write(f"**Estimated Total Cost (USD):** ${st.session_state['total_cost']:.4f}")
+
+    # 2) Show Data Preview (if df is uploaded)
     if st.session_state["df"] is not None:
         with st.expander("Data Preview", expanded=True):
             st.write("Here are the first rows of your uploaded data:")
             st.dataframe(st.session_state["df"].head())
 
-    # 2) Show GPT-Generated Code
+    # 3) Show GPT-Generated Code
     if st.session_state["code_generated"]:
         with st.expander("GPT-Generated Code", expanded=True):
             st.write("This is the code GPT generated based on your prompt:")
@@ -148,7 +185,7 @@ def main():
             except Exception as e:
                 st.error(f"Error executing code: {e}")
 
-    # 3) Show Execution Result
+    # 4) Show Execution Result
     if st.session_state["result"] is not None:
         with st.expander("Execution Result", expanded=True):
             st.write("The code's 'result' variable is shown below:")
